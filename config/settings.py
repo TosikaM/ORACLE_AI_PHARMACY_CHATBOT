@@ -1,12 +1,15 @@
 """
 Configuration loader for Pharmacy AI Chatbot
 Supports both local development (.env) and Streamlit Cloud (secrets.toml)
+Now supports full wallet directory as ZIP file
 """
 
 import os
 import sys
 import base64
 import tempfile
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 def load_configuration():
@@ -16,8 +19,6 @@ def load_configuration():
     """
     
     # Detect Streamlit Cloud environment
-    # Only treat as cloud if ACTUALLY deployed to Streamlit Cloud
-    # Not just because streamlit is running locally
     is_streamlit_cloud = (
         os.getenv('STREAMLIT_SHARING_MODE') is not None or
         os.getenv('STREAMLIT_SERVER_PORT') is not None or
@@ -65,9 +66,35 @@ def load_configuration():
                     os.environ['ORACLE_WALLET_PASSWORD'] = st.secrets['oracle_wallet']['wallet_password']
                     print("  ✅ Loaded ORACLE_WALLET_PASSWORD")
                 
-                # Decode and save wallet file
-                if 'cwallet_sso_base64' in st.secrets['oracle_wallet']:
+                # Check for wallet ZIP (preferred) or individual cwallet.sso (legacy)
+                if 'wallet_zip_base64' in st.secrets['oracle_wallet']:
+                    # NEW METHOD: Decode entire wallet directory from ZIP
                     try:
+                        print("  📦 Decoding wallet ZIP...")
+                        wallet_zip_base64 = st.secrets['oracle_wallet']['wallet_zip_base64']
+                        wallet_zip_bytes = base64.b64decode(wallet_zip_base64)
+                        
+                        # Create temp directory for wallet
+                        wallet_dir = tempfile.mkdtemp(prefix='oracle_wallet_')
+                        
+                        # Extract ZIP contents
+                        with zipfile.ZipFile(BytesIO(wallet_zip_bytes), 'r') as zip_ref:
+                            zip_ref.extractall(wallet_dir)
+                        
+                        # List extracted files
+                        extracted_files = os.listdir(wallet_dir)
+                        print(f"  ✅ Extracted {len(extracted_files)} files: {', '.join(extracted_files)}")
+                        
+                        os.environ['ORACLE_WALLET_LOCATION'] = wallet_dir
+                        print(f"  ✅ Wallet extracted to: {wallet_dir}")
+                        
+                    except Exception as e:
+                        print(f"  ❌ Failed to decode wallet ZIP: {e}")
+                
+                elif 'cwallet_sso_base64' in st.secrets['oracle_wallet']:
+                    # OLD METHOD: Decode only cwallet.sso (will fail without tnsnames.ora)
+                    try:
+                        print("  ⚠️ Using legacy cwallet.sso only (missing tnsnames.ora!)")
                         wallet_base64 = st.secrets['oracle_wallet']['cwallet_sso_base64']
                         wallet_bytes = base64.b64decode(wallet_base64)
                         
@@ -79,7 +106,10 @@ def load_configuration():
                             f.write(wallet_bytes)
                         
                         os.environ['ORACLE_WALLET_LOCATION'] = wallet_dir
-                        print(f"  ✅ Decoded wallet to: {wallet_dir}")
+                        print(f"  ⚠️ Decoded cwallet.sso only to: {wallet_dir}")
+                        print(f"  ⚠️ WARNING: tnsnames.ora and sqlnet.ora are missing!")
+                        print(f"  ⚠️ Database connection will likely fail!")
+                        
                     except Exception as e:
                         print(f"  ❌ Failed to decode wallet: {e}")
             else:
